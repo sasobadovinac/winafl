@@ -1,6 +1,77 @@
 =========
 ChangeLog
 =========
+
+-----------------------------------
+Version 1.16b (based on afl 2.43b):
+-----------------------------------
+
+  - Fixed an issue with Intel PT mode where target processes were not
+    terminated properly.
+    Reported by Jason Shirk
+    
+  - Added a port of afl-analyze
+    Contributed by L4ys
+
+  - DynamoRIO version update - started building prebuilt binaries with
+    DynamoRIO 7.1
+ 
+----------------------------------
+Version 1.16 (based on afl 2.43b):
+----------------------------------
+
+  - Intel PT support.
+
+  - Fix target_path in afl-showmap in drioless mode
+    Contributed by L4ys
+
+----------------------------------
+Version 1.15 (based on afl 2.43b):
+----------------------------------
+
+  - Added -p flag which persists DynamoRIO cache across process restarts.
+    This might have a slight positive impact on performance in some scenarios,
+    such as where WinAFL persistece can't be used effectively, or
+    with very complex targets.
+
+  - Fix custom_net_fuzzer to avoid consuming system resources by
+    unclosed sockets.
+    Contributed by MostafaSoliman
+
+----------------------------------
+Version 1.14 (based on afl 2.43b):
+----------------------------------
+  
+  - Added support for third-party DLLs for custom test cases processing
+    This currently comes with (experimental) network fuzzing implementation
+    (both server- and client- side)
+    Contributed by Maksim Shudrak
+
+  - New "In App Persistence" mode that relaxes target_method restrictions
+    if the target process can be made to loop on its own
+    Contributed by Guy Inbar
+    
+  - Implemented setup_post on Windows
+    Contributed by Quang Nguyễn
+
+  - Added separate timeout for process initialization and the first run
+    Contributed by Netanel Ben Simon
+
+  - Added color support to afl-showmap & afl-tmin
+    Contributed by Yoav Alon
+
+  - added winafl-plot.py a winafl replacement for afl-plot
+    Contributed by Yoav Alon
+
+  - added winafl-whatsup.py a winafl replacement for afl-whatsup
+    Contributed by Yoav Alon
+
+  - Fixed compilation issue on newer versions of DynamoRIO
+    Contributed by Yoav Alon
+    
+  - Other minor fixes and improvements
+    Contributed by L4ys, Yoav Alon, Netanel Ben Simon and others
+
 ----------------------------------
 Version 1.13 (based on afl 2.43b):
 ----------------------------------

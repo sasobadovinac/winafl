@@ -703,6 +703,18 @@ static void run_target(char** argv) {
   child_timed_out = 0;
   memset(trace_bits, 0, MAP_SIZE);
 
+  //TEMPORARY FIX FOR REGULAR USAGE OF AFL-TMIN
+  ReadFile(pipe_handle, &result, 1, &num_read, NULL);
+  if (result == 'K')
+  {
+	  //a workaround for first cycle
+	  ReadFile(pipe_handle, &result, 1, &num_read, NULL);
+  }
+  if (result != 'P')
+  {
+	  FATAL("Unexpected result from pipe! expected 'P', instead received '%c'\n", result);
+  }
+  //END OF TEMPORARY FIX FOR REGULAR USAGE OF AFL-TMIN
   WriteFile( 
     pipe_handle,  // handle to pipe 
     command,      // buffer to write from 
@@ -1093,7 +1105,7 @@ int main(int argc, char** argv) {
     // Find the name of the target executable in the arguments
     for(; i < argc; i++) {
       if(strcmp(argv[i], "--") == 0) counter++;
-      if(counter == 2) {
+      if(counter == (drioless ? 1:2)) {
         if(i != (argc - 1)) {
           target_path = argv[i + 1];
         }

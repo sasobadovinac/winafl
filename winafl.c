@@ -29,7 +29,11 @@
 #include "drx.h"
 #include "drreg.h"
 #include "drwrap.h"
+
+#ifdef USE_DRSYMS
 #include "drsyms.h"
+#endif
+
 #include "modules.h"
 #include "utils.h"
 #include "hashtable.h"
@@ -93,7 +97,8 @@ typedef struct _winafl_option_t {
     int num_fuz_args;
     drwrap_callconv_t callconv;
     bool thread_coverage;
-    bool enable_socket_fuzzing;
+    bool no_loop;
+	bool dr_persist_cache;
 } winafl_option_t;
 static winafl_option_t options;
 
@@ -236,7 +241,7 @@ static void event_thread_init(void *drcontext)
   if(options.thread_coverage) {
     thread_data[1] = winafl_data.fake_afl_area;
   } else {
-    thread_data[1] = 0;
+    thread_data[1] = winafl_data.afl_area;
   }
   drmgr_set_tls_field(drcontext, winafl_tls_field, thread_data);
 }
@@ -260,6 +265,7 @@ instrument_bb_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
     target_module_t *target_modules;
     bool should_instrument;
     unsigned char *afl_map;
+	dr_emit_flags_t ret;
 
     if (!drmgr_is_first_instr(drcontext, inst))
         return DR_EMIT_DEFAULT;
@@ -288,7 +294,7 @@ instrument_bb_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
         }
         target_modules = target_modules->next;
     }
-    if(!should_instrument) return DR_EMIT_DEFAULT;
+    if(!should_instrument) return DR_EMIT_DEFAULT | DR_EMIT_PERSISTABLE;
 
     offset = (uint)(start_pc - mod_entry->data->start);
     offset &= MAP_SIZE - 1;
@@ -297,7 +303,7 @@ instrument_bb_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
 
     drreg_reserve_aflags(drcontext, bb, inst);
 
-    if(options.thread_coverage) {
+    if(options.thread_coverage || options.dr_persist_cache) {
       reg_id_t reg;
       opnd_t opnd1, opnd2;
       instr_t *new_instr;
@@ -316,17 +322,21 @@ instrument_bb_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
       instrlist_meta_preinsert(bb, inst, new_instr);
 
       drreg_unreserve_register(drcontext, bb, inst, reg);
-    } else {
+
+	  ret = DR_EMIT_DEFAULT | DR_EMIT_PERSISTABLE;
+
+	} else {
 
       instrlist_meta_preinsert(bb, inst,
           INSTR_CREATE_inc(drcontext, OPND_CREATE_ABSMEM
           (&(afl_map[offset]), OPSZ_1)));
 
+	  ret = DR_EMIT_DEFAULT;
     }
 
     drreg_unreserve_aflags(drcontext, bb, inst);
 
-    return DR_EMIT_DEFAULT;
+    return ret;
 }
 
 static dr_emit_flags_t
@@ -344,6 +354,7 @@ instrument_edge_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *i
     uint offset;
     target_module_t *target_modules;
     bool should_instrument;
+	dr_emit_flags_t ret;
 
     if (!drmgr_is_first_instr(drcontext, inst))
         return DR_EMIT_DEFAULT;
@@ -372,7 +383,7 @@ instrument_edge_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *i
         }
         target_modules = target_modules->next;
     }
-    if(!should_instrument) return DR_EMIT_DEFAULT;
+    if(!should_instrument) return DR_EMIT_DEFAULT | DR_EMIT_PERSISTABLE;
 
     offset = (uint)(start_pc - mod_entry->data->start);
     offset &= MAP_SIZE - 1;
@@ -388,16 +399,21 @@ instrument_edge_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *i
     drmgr_insert_read_tls_field(drcontext, winafl_tls_field, bb, inst, reg3);
 
     //load address of shm into reg2
-    if(options.thread_coverage) {
+    if(options.thread_coverage || options.dr_persist_cache) {
       opnd1 = opnd_create_reg(reg2);
       opnd2 = OPND_CREATE_MEMPTR(reg3, sizeof(void *));
       new_instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
       instrlist_meta_preinsert(bb, inst, new_instr);
-    } else {
+
+	  ret = DR_EMIT_DEFAULT | DR_EMIT_PERSISTABLE;
+
+	} else {
       opnd1 = opnd_create_reg(reg2);
       opnd2 = OPND_CREATE_INTPTR((uint64)winafl_data.afl_area);
       new_instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
       instrlist_meta_preinsert(bb, inst, new_instr);
+
+	  ret = DR_EMIT_DEFAULT;
     }
 
     //load previous offset into register
@@ -429,7 +445,7 @@ instrument_edge_coverage(void *drcontext, void *tag, instrlist_t *bb, instr_t *i
     drreg_unreserve_register(drcontext, bb, inst, reg);
     drreg_unreserve_aflags(drcontext, bb, inst);
 
-    return DR_EMIT_DEFAULT;
+    return ret;
 }
 
 static void
@@ -508,7 +524,7 @@ pre_fuzz_handler(void *wrapcxt, INOUT void **user_data)
     }
 
     //save or restore arguments
-    if (!options.enable_socket_fuzzing) {
+    if (!options.no_loop) {
         if (fuzz_target.iteration == 0) {
             for (i = 0; i < options.num_fuz_args; i++)
                 options.func_args[i] = drwrap_get_arg(wrapcxt, i);
@@ -541,7 +557,7 @@ post_fuzz_handler(void *wrapcxt, void *user_data)
     }
 
     /* We don't need to reload context in case of network-based fuzzing. */
-    if (options.enable_socket_fuzzing)
+    if (options.no_loop)
         return;
 
     fuzz_target.iteration++;
@@ -656,9 +672,11 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
                 to_wrap = (app_pc)dr_get_proc_address(info->handle, options.fuzz_method);
                 if(!to_wrap) {
                     //if that fails, try with the symbol access library
+#ifdef USE_DRSYMS
                     drsym_init(0);
                     drsym_lookup_symbol(info->full_path, options.fuzz_method, (size_t *)(&to_wrap), 0);
                     drsym_exit();
+#endif
                     DR_ASSERT_MSG(to_wrap, "Can't find specified method in fuzz_module");                
                     to_wrap += (size_t)info->start;
                 }
@@ -819,10 +837,11 @@ options_init(client_id_t id, int argc, const char *argv[])
     options.fuzz_method[0] = 0;
     options.fuzz_offset = 0;
     options.fuzz_iterations = 1000;
-    options.enable_socket_fuzzing = false;
+    options.no_loop = false;
     options.func_args = NULL;
     options.num_fuz_args = 0;
     options.callconv = DRWRAP_CALLCONV_DEFAULT;
+	options.dr_persist_cache = false;
     dr_snprintf(options.logdir, BUFFER_SIZE_ELEMENTS(options.logdir), ".");
 
     strcpy(options.pipe_name, "\\\\.\\pipe\\afl_pipe_default");
@@ -904,10 +923,13 @@ options_init(client_id_t id, int argc, const char *argv[])
                 options.callconv = DRWRAP_CALLCONV_MICROSOFT_X64;
             else
                 NOTIFY(0, "Unknown calling convention, using default value instead.\n");
-        }
-        else if (strcmp(token, "-socket_fuzzing") == 0) {
-            options.enable_socket_fuzzing = true;
-        }
+		}
+		else if (strcmp(token, "-no_loop") == 0) {
+			options.no_loop = true;
+		}
+		else if (strcmp(token, "-drpersist") == 0) {
+			options.dr_persist_cache = true;
+		}
 		else if (strcmp(token, "-persistence_mode") == 0) {
 			USAGE_CHECK((i + 1) < argc, "missing mode arg: '-fuzz_mode' arg");
 			const char* mode = argv[++i];
@@ -979,7 +1001,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         winafl_data.afl_area = (unsigned char *)dr_global_alloc(MAP_SIZE);
     }
 
-    if(options.coverage_kind == COVERAGE_EDGE || options.thread_coverage) {
+    if(options.coverage_kind == COVERAGE_EDGE || options.thread_coverage || options.dr_persist_cache) {
         winafl_tls_field = drmgr_register_tls_field();
         if(winafl_tls_field == -1) {
             DR_ASSERT_MSG(false, "error reserving TLS field");
